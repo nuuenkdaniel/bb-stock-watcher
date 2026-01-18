@@ -2,7 +2,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
 use dotenv::dotenv;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use std::env;
 
@@ -16,12 +16,12 @@ struct QueryResult {
 struct Product {
     sku: i64,
     name: String,
-    #[allow(non_snake_case)]
-    onlineAvailability: bool, 
-    #[allow(non_snake_case)]
-    inStoreAvailability: bool,
-    orderable: String,
-    active: bool
+    #[serde(rename = "onlineAvailability")]
+    online_availability: bool, 
+    #[serde(rename = "inStoreAvailability")]
+    in_store_availability: bool,
+    // orderable: String,
+    //active: bool
 }
 
 struct BestBuyCalls {
@@ -100,8 +100,8 @@ impl GotifyNotif {
         let title = "Product available";
         let priority = 32;
         for product in result.products {
-            println!("Got here");
-            if product.inStoreAvailability == true || product.onlineAvailability == true {
+            dbg!(&product);
+            if product.in_store_availability == true || product.online_availability == true {
                 let message = format!("Sku: {} aka \"{}\" is available", product.sku, product.name);
                 gotify_notif.send_notif(&title, &message, priority).await?;
             }
