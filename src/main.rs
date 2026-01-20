@@ -124,11 +124,11 @@ async fn main() -> Result<()>{
     };
 
     let mut timer = time::interval(Duration::from_secs(interval));
-    let mut product_status_map = HashMap::new();
-    skus.iter()
-        .map(|&sku| product_status_map.insert(sku, false));
+    let mut product_status_map: HashMap<String,bool> = HashMap::new();
+    let _ = skus.iter()
+        .map(|&sku| product_status_map.insert(sku.to_string(), false));
     loop {
-        if repeat { timer.tick().await?; }
+        if repeat { timer.tick().await; }
         let resp = best_buy.get_skus_details(skus.clone()).await;
         if let Err(e) = &resp {
             eprintln!("Error querying availability: {}", e);
@@ -140,8 +140,8 @@ async fn main() -> Result<()>{
             // dbg!(&product);
             let product_sku = product.sku.to_string();
             if product.in_store_availability || product.online_availability {
-                let product_status = product_status_map.insert(product_sku.as_str(), true);
-                if !product_status? {
+                let product_status = product_status_map.insert(product_sku, true);
+                if !product_status.unwrap_or(false) {
                     let message = format!("Sku: {} aka \"{}\" is available", product.sku, product.name);
                     if gotify_status {
                         let notif_title = "Product Available";
@@ -155,8 +155,8 @@ async fn main() -> Result<()>{
                 }
             }
             else {
-                let product_status = product_status_map.insert(product_sku.as_str(), false);
-                if product_status? {
+                let product_status = product_status_map.insert(product_sku, false);
+                if product_status.unwrap_or(false) {
                     let message = format!("Sku: {} aka \"{}\" is no longer available", product.sku, product.name);
                     if gotify_status {
                         let notif_title = "Product Unavailable";
