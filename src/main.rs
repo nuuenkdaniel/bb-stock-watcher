@@ -3,8 +3,10 @@ use serde::Deserialize;
 use serde_json::json;
 use dotenv::dotenv;
 use anyhow::{Context, Result};
+use tokio::time::{self, Duration};
 
 use std::env;
+use std::collections::HashMap;
 
 #[derive(Deserialize, Debug)]
 struct QueryResult {
@@ -41,7 +43,11 @@ impl BestBuyCalls {
         skus: Vec<&str>
     ) -> Result<QueryResult> {
         let skus_formatted = skus.join(",");
-        let url = format!("https://api.bestbuy.com/v1/products(sku%20in({}))?show=sku,name,onlineAvailability,inStoreAvailability,orderable,active&apiKey={}&format=json", skus_formatted, self.api_key);
+        let url = format!(
+            "https://api.bestbuy.com/v1/products(sku%20in({}))?show=sku,name,onlineAvailability,inStoreAvailability,orderable,active&apiKey={}&format=json",
+            skus_formatted,
+            self.api_key
+        );
         self.client
             .get(url)
             .send()
@@ -58,7 +64,7 @@ impl GotifyNotif {
         &self,
         title: &str,
         message: &String,
-        priority: i32
+        priority: u32
     ) -> Result<()> {
         let url = format!("https://{}/message?token={}", self.server, self.api_key);
         self.client
@@ -68,7 +74,7 @@ impl GotifyNotif {
                 "message": message,
                 "priority": priority
             }))
-            .send()
+        .send()
             .await
             .context("Failed to connect to gotify server")?;
         Ok(())
@@ -76,35 +82,80 @@ impl GotifyNotif {
 }
 
 #[tokio::main]
-    async fn main() -> Result<()>{
-        dotenv().ok();
-        let bb_api_key: String = env::var("BEST_BUY_KEY").expect("BEST_BUY_KEY not found");
-        let gotify_api_key: String = env::var("GOTIFY_API_KEY").expect("GOTIFY_API_KEY not found");
-        let gotify_server: String = env::var("GOTIFY_SERVER").expect("GOTIFY_SERVER not found");
+async fn main() -> Result<()>{
+    dotenv().ok();
 
-        let client: Client = Client::new();
+    // Get env vars
+    let bb_api_key: String = env::var("BEST_BUY_KEY").expect("BEST_BUY_KEY not found");
+    let skus_raw = env::var("SKUS").expect("SKUS not found");
+    let repeat_raw = env::var("REPEAT").unwrap_or_default();
+    let interval_raw = env::var("INTERVAL").unwrap_or_default();
+    let gotify_status_raw = env::var("GOTIFY").unwrap_or_default();
+    let gotify_api_key: String = env::var("GOTIFY_API_KEY").expect("GOTIFY_API_KEY not found");
+    let gotify_server: String = env::var("GOTIFY_SERVER").expect("GOTIFY_SERVER not found");
+    let gotify_priority_raw = env::var("GOTIFY_PRIORITY").unwrap_or_default();
 
-        let best_buy = BestBuyCalls {
-            api_key: bb_api_key,
-            client: client.clone()
-        };
+    // Reformat env vars
+    let skus: Vec<&str> = skus_raw
+        .split(",")
+        .map(|s| s.trim())
+        .collect();
+    let repeat = match repeat_raw.to_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        _ => false
+    };
+    let gotify_status = match gotify_status_raw.to_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        _ => false
+    };
+    let interval: u64 = interval_raw.parse().unwrap_or(300);
+    let gotify_priority: u32 = gotify_priority_raw.parse().unwrap_or(0);
 
-        let skus = vec!["6550199"];
-        let result: QueryResult = best_buy.get_skus_details(skus).await?;
-        dbg!(&result);
-        let gotify_notif = GotifyNotif {
-            api_key: gotify_api_key,
-            client: client.clone(),
-            server: gotify_server
-        };
-        let title = "Product available";
-        let priority = 32;
+    // Initialize structs
+    let client: Client = Client::new();
+    let best_buy = BestBuyCalls {
+        api_key: bb_api_key,
+        client: client.clone()
+    };
+    let gotify_notif = GotifyNotif {
+        api_key: gotify_api_key,
+        client: client.clone(),
+        server: gotify_server
+    };
+
+    let mut timer = time::interval(Duration::from_secs(interval));
+    let mut product_status_map: HashMap<String,bool> = skus.iter()
+        .map(|sku| (sku.to_string(), false))
+        .collect();
+    loop {
+        if repeat { timer.tick().await; }
+        let resp = best_buy.get_skus_details(skus.clone()).await;
+        if let Err(e) = &resp {
+            eprintln!("Error querying availability: {}", e);
+            continue;
+        }
+        let result = resp?;
+        println!("Queried");
         for product in result.products {
-            dbg!(&product);
-            if product.in_store_availability == true || product.online_availability == true {
-                let message = format!("Sku: {} aka \"{}\" is available", product.sku, product.name);
-                gotify_notif.send_notif(&title, &message, priority).await?;
+            // dbg!(&product);
+            let product_sku = product.sku.to_string();
+            let product_status = product.in_store_availability || product.online_availability;
+            let prev_product_status = product_status_map.insert(product_sku, product_status).unwrap_or(false);
+            if product_status != prev_product_status {
+                let availability_msg_slice = if product_status { "available" } else { "no longer available" };
+                let message = format!("Sku: {} aka \"{}\" is {}", product.sku, product.name, availability_msg_slice);
+                if gotify_status {
+                    let notif_title = if product_status { "Product Available" } else { "Product Unavailable" };
+                    let resp = gotify_notif.send_notif(&notif_title, &message, gotify_priority).await;
+                    if let Err(e) = &resp {
+                        eprintln!("Error reaching gotify server: {}", e);
+                        continue;
+                    }
+                }
+                println!("{}", message);
             }
         }
-        Ok(())
+        if !repeat { break; }
     }
+    Ok(())
+}
