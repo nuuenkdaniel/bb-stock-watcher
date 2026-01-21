@@ -124,9 +124,9 @@ async fn main() -> Result<()>{
     };
 
     let mut timer = time::interval(Duration::from_secs(interval));
-    let mut product_status_map: HashMap<String,bool> = HashMap::new();
-    let _ = skus.iter()
-        .map(|&sku| product_status_map.insert(sku.to_string(), false));
+    let mut product_status_map: HashMap<String,bool> = skus.iter()
+        .map(|sku| (sku.to_string(), false))
+        .collect();
     loop {
         if repeat { timer.tick().await; }
         let resp = best_buy.get_skus_details(skus.clone()).await;
@@ -139,36 +139,23 @@ async fn main() -> Result<()>{
         for product in result.products {
             // dbg!(&product);
             let product_sku = product.sku.to_string();
-            if product.in_store_availability || product.online_availability {
-                let product_status = product_status_map.insert(product_sku, true);
-                if !product_status.unwrap_or(false) {
-                    let message = format!("Sku: {} aka \"{}\" is available", product.sku, product.name);
-                    if gotify_status {
-                        let notif_title = "Product Available";
-                        let resp = gotify_notif.send_notif(&notif_title, &message, gotify_priority).await;
-                        if let Err(e) = &resp {
-                            eprintln!("Error reaching gotify server: {}", e);
-                            continue;
-                        }
+            let product_status = product.in_store_availability || product.online_availability;
+            let prev_product_status = product_status_map.insert(product_sku, product_status).unwrap_or(false);
+            if product_status != prev_product_status {
+                let availability_msg_slice = if product_status { "available" } else { "no longer available" };
+                let message = format!("Sku: {} aka \"{}\" is {}", product.sku, product.name, availability_msg_slice);
+                if gotify_status {
+                    let notif_title = if product_status { "Product Available" } else { "Product Unavailable" };
+                    let resp = gotify_notif.send_notif(&notif_title, &message, gotify_priority).await;
+                    if let Err(e) = &resp {
+                        eprintln!("Error reaching gotify server: {}", e);
+                        continue;
                     }
-                    println!("{}", message);
                 }
-            }
-            else {
-                let product_status = product_status_map.insert(product_sku, false);
-                if product_status.unwrap_or(false) {
-                    let message = format!("Sku: {} aka \"{}\" is no longer available", product.sku, product.name);
-                    if gotify_status {
-                        let notif_title = "Product Unavailable";
-                        let resp = gotify_notif.send_notif(&notif_title, &message, gotify_priority).await;
-                        if let Err(e) = &resp {
-                            eprintln!("Error reaching gotify server: {}", e);
-                            continue;
-                        }
-                    }
-                    println!("{}", message);
-                }
+                println!("{}", message);
             }
         }
+        if !repeat { break; }
     }
+    Ok(())
 }
